@@ -10,7 +10,7 @@ WHEEL_DIAMETER = 1.6
 MAX_PHI = 3.2
 MAX_SIMULATION_TIME = 30 * 1000
 MAX_MEASURED_DISTANCE = 1.27
-ACCEPTED_ERROR = 0.0001
+ACCEPTED_ERROR = 0.001
 K = 10
 
 # create the Robot instance.
@@ -177,19 +177,25 @@ def correctDirection(desiredDirection):
 def move():
     global time
 
+    lastCorrectionTime = MAX_SIMULATION_TIME
+
     while time < MAX_SIMULATION_TIME:
 
         recognized_object_array = camera.getRecognitionObjects()
 
         # If There is no object rotates until finds it
-        if len(recognized_object_array) < 1:
+        if len(recognized_object_array) < 1 or abs(time - lastCorrectionTime) > 5000:
             desiredYaw = getObjectDirection()
 
             if abs(getYawRadians() - desiredYaw) > ACCEPTED_ERROR:
                 correctDirection(desiredYaw)
+                lastCorrectionTime = time
 
         # Stop robot after facing object
         setSpeedsRPS(0, 0)
+        # Pass Time
+        robot.step(timestep)
+        time += timestep
 
 
 time = 0
