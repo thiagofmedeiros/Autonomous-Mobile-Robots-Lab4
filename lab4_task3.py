@@ -7,8 +7,8 @@ import math
 
 WHEEL_DIST = 1.05
 WHEEL_DIAMETER = 1.6
-MAX_PHI = 3.2
-MAX_SIMULATION_TIME = 30 * 1000
+MAX_PHI = 3
+MAX_SIMULATION_TIME = 3 * 60 * 1000
 MAX_MEASURED_DISTANCE = 1.27
 ACCEPTED_ERROR = 0.0001
 K = 10
@@ -74,32 +74,22 @@ def getSensors():
     ldsVal = metersToInches(leftDistanceSensor.getValue())
     rdsVal = metersToInches(rightDistanceSensor.getValue())
 
-    print("FrontDist {0:.3f} inches".format(fdsVal))
-    print("LeftDist {0:.3f} inches".format(ldsVal))
-    print("RightDist {0:.3f} inches\n".format(rdsVal))
-
     return fdsVal, ldsVal, rdsVal
 
 
 def setSpeedsRPS(rpsLeft, rpsRight):
     if rpsLeft > MAX_PHI:
-        print("Saturating left speed to {0:.3f} rad/s".format(MAX_PHI))
         leftMotor.setVelocity(MAX_PHI)
     elif rpsLeft < -MAX_PHI:
-        print("Saturating left speed to {0:.3f} rad/s".format(-MAX_PHI))
         leftMotor.setVelocity(-MAX_PHI)
     else:
-        print("Left motor velocity: {0:.3f} rad/s".format(rpsLeft))
         leftMotor.setVelocity(rpsLeft)
 
     if rpsRight > MAX_PHI:
-        print("Saturating right speed to {0:.3f} rad/s".format(MAX_PHI))
         rightMotor.setVelocity(MAX_PHI)
     elif rpsRight < -MAX_PHI:
-        print("Saturating right speed to {0:.3f} rad/s".format(-MAX_PHI))
         rightMotor.setVelocity(-MAX_PHI)
     else:
-        print("Right motor velocity: {0:.3f} rad/s\n".format(rpsRight))
         rightMotor.setVelocity(rpsRight)
 
 
@@ -127,6 +117,23 @@ def rotateUntilObject(find, clockwise):
             recognized_object_array = camera.getRecognitionObjects()
 
 
+def convertTo2pi(radians):
+    if radians < 0:
+        radians += math.pi * 2
+
+    return radians
+
+
+def convertToPiPi(radians):
+    if radians < -math.pi:
+        radians += math.pi * 2
+
+    if radians > math.pi:
+        radians -= math.pi * 2
+
+    return radians
+
+
 def getObjectDirection():
     recognized_object_array = camera.getRecognitionObjects()
 
@@ -150,8 +157,12 @@ def getObjectDirection():
         rotateUntilObject(find=False, clockwise=False)
         secondYaw = getYawRadians()
 
+    firstYaw = convertTo2pi(firstYaw)
+    secondYaw = convertTo2pi(secondYaw)
     # The direction of the object is the average between both angles
     direction = (firstYaw + secondYaw) / 2
+
+    direction = convertToPiPi(direction)
 
     return direction
 
@@ -174,35 +185,99 @@ def correctDirection(desiredDirection):
     print("\nDirection Corrected\n")
 
 
-def move(distance):
+def turn90degrees(direction):
     global time
 
+    yaw = getYawDegrees()
+
+    if direction:
+        yaw -= 90
+    else:
+        yaw += 90
+
+    if yaw > 360:
+        yaw -= 360
+
+    correctDirection(convertToPiPi(math.radians(yaw)))
+
+
+def correctToObjectDirection():
+    desiredYaw = getObjectDirection()
+
+    if abs(getYawRadians() - desiredYaw) > ACCEPTED_ERROR:
+        correctDirection(desiredYaw)
+
+
+def executeTurn():
+    global time
+
+    for i in range(60):
+        robot.step(timestep)
+        time += timestep
+    turn90degrees(not clockwise)
+
+
+def move(desired_distance):
+    global time
+
+    reached = False
     lastCorrectionTime = MAX_SIMULATION_TIME
+    unobstructed = True
+    cameraDistance = 100
+    turns = 0
 
-    error = 1
+    correctToObjectDirection()
 
-    while abs(error) > ACCEPTED_ERROR and time < MAX_SIMULATION_TIME:
+    while not reached and time < MAX_SIMULATION_TIME:
+        frontSensor, leftSensor, rightSensor = getSensors()
 
         recognized_object_array = camera.getRecognitionObjects()
 
-        # If There is no object rotates until finds it
-        # Also reorients each 10 seconds
-        if len(recognized_object_array) < 1 or abs(time - lastCorrectionTime) > 10000:
-            desiredYaw = getObjectDirection()
-
-            if abs(getYawRadians() - desiredYaw) > ACCEPTED_ERROR:
-                correctDirection(desiredYaw)
+        if len(recognized_object_array) > 0:
+            if unobstructed and abs(time - lastCorrectionTime) > 5000:
+                correctToObjectDirection()
+                frontSensor, leftSensor, rightSensor = getSensors()
 
                 lastCorrectionTime = time
+            recognized_object = camera.getRecognitionObjects()[0]
+            cameraDistanceMeters = recognized_object.get_position()[0]
+            cameraDistance = metersToInches(cameraDistanceMeters)
+            error = cameraDistance - desired_distance
+        else:
+            print("Lost sight of goal")
+            error = frontSensor - (MIN_DISTANCE_WALL - 0.1)
 
-        recognized_object = camera.getRecognitionObjects()[0]
-        position = camera.getRecognitionObjects()[0].get_position()
-        orientation = camera.getRecognitionObjects()[0].get_orientation()
+        if cameraDistance < 24:
+            if abs(frontSensor - desired_distance) < ACCEPTED_ERROR:
+                reached = True
+                return
 
-        frontSensor, leftSensor, rightSensor = getSensors()
-        error = frontSensor - distance
+            error = frontSensor - desired_distance
 
-        if abs(error) > ACCEPTED_ERROR:
+        if frontSensor < MIN_DISTANCE_WALL:
+            print("Obstructed")
+            unobstructed = False
+            turn90degrees(clockwise)
+            turns += 1
+            frontSensor, leftSensor, rightSensor = getSensors()
+
+        if not unobstructed:
+            if clockwise:
+                if leftSensor > MIN_DISTANCE_WALL * 3:
+                    executeTurn()
+                    frontSensor, leftSensor, rightSensor = getSensors()
+                    turns -= 1
+                    if turns == 0:
+                        unobstructed = True
+            else:
+                if rightSensor > MIN_DISTANCE_WALL * 3:
+                    executeTurn()
+                    frontSensor, leftSensor, rightSensor = getSensors()
+                    turns -= 1
+                    if turns == 0:
+                        unobstructed = True
+
+        if not reached:
             speed = K * error
 
             setSpeedsRPS(speed, speed)
@@ -213,10 +288,11 @@ def move(distance):
 
 
 DESIRED_DISTANCE = 5
+MIN_DISTANCE_WALL = 2
 
 time = 0
 
-clockwise = True
+clockwise = False
 
 robot.step(timestep)
 time += timestep
